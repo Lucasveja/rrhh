@@ -1,0 +1,2 @@
+select * from  asignados inner join evaluado on asignados.idevaluado=evaluado.id where idevaluador='12' and periodo='2017'
+and not exists(select * from movimientos where movimientos.idevaluado=asignados.idevaluado)

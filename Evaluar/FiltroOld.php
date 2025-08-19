@@ -1,0 +1,48 @@
+<?php
+ session_start();
+
+ $conexion= mysql_connect("localhost","root","KhyWKHIR9U47");
+    if (!mysql_select_db("datos",$conexion))
+   {
+      echo "Error seleccionando la base de datos.";
+      exit();
+   }
+
+$idcombo = $_POST["id"];
+$action =$_POST["combo"];
+$empresa=$_POST["emp"];
+$peri=$_POST["per"];
+//$p= explode("/",$peri);
+//$peri=$p[0].$p[1];
+ 
+switch($action){
+    case "evaluador":
+                  $os=$idcombo;
+                  $sqlM="SELECT e.id,e.nombre FROM asignados a inner join evaluado e on a.idevaluado=e.id where
+a.idevaluador={$idcombo} and a.idempresa={$empresa} and a.periodo={$peri}";
+                  $consulta=mysql_query($sqlM,$conexion);
+                  $Resultado = mysql_num_rows($consulta);
+
+                 //echo'<option>'.htmlentities($sqlM).'</option>';
+
+                  while ($row = mysql_fetch_array($consulta))
+                  {
+                    echo"<option value='".htmlentities($row['id'])."'>".htmlentities($row['nombre']).'</option>';
+                  }
+
+                  break;
+    
+
+   
+              
+
+    
+                
+
+    
+        
+}//fin switch
+?>
+
+
+
