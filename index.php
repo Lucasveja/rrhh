@@ -1,5 +1,14 @@
+<?php
+declare(strict_types=1);
+error_reporting(E_ALL);
+
+// Obtener mensajes del query string
+$msgError       = filter_input(INPUT_GET, 'msg_error', FILTER_VALIDATE_INT);
+$statusRegistro = filter_input(INPUT_GET, 'status_registro', FILTER_VALIDATE_INT);
+$emailEnviado   = filter_input(INPUT_GET, 'i_EmailEnviado', FILTER_VALIDATE_INT);
+?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html lang="es" xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <title>Login</title>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -7,12 +16,12 @@
     <!--Bootstrap-->
     <link href="CSS/bootstrap.min.css" rel="stylesheet" type="text/css" media="screen" />
     <link href="style.css" rel="stylesheet" type="text/css" media="screen" />
-    <script type="text/javascript" src="js/jquery-1.8.3.js"></script> 
-    <script type="text/javascript" src="jalert/jquery.alerts.js"></script>  
-	<link href="jalert/jquery.alerts.css" rel="stylesheet" type="text/css" />
+    <script type="text/javascript" src="js/jquery-1.8.3.js"></script>
+    <script type="text/javascript" src="jalert/jquery.alerts.js"></script>
+    <link href="jalert/jquery.alerts.css" rel="stylesheet" type="text/css" />
     <script src="js/jquery.validate.js" type="text/javascript"></script>
     <script src="js/messages_es.js" type="text/javascript"></script>
-	
+
     <script type="text/javascript">
     $().ready(function() {
         $("#frmlogin").validate({
@@ -27,62 +36,62 @@
 </head>
 <body>
     <?php
-        //Mostrar errores de validacion de usuario
-        if( isset( $_POST['msg_error'] ) ) {
-            switch( $_POST['msg_error'] ) {
-                case 1:
+    // Mostrar errores de validación de usuario
+    if ($msgError !== null && $msgError !== false) {
+        switch ($msgError) {
+            case 1:
+                ?>
+                <script type="text/javascript">
+                    jAlert("El usuario o password son incorrectos.", "Seguridad");
+                    $("#password").focus();
+                </script>
+                <?php
+                break;
+            case 2:
+                ?>
+                <script type="text/javascript">
+                    jAlert("La seccion a la que intentaste entrar esta restringida.\n Solo permitida para usuarios registrados.", "Seguridad");
+                </script>
+                <?php
+                break;
+        } //Fin switch
+    }
+
+    // Mostrar mensajes del estado del registro
+    if ($statusRegistro !== null && $statusRegistro !== false) {
+        switch ($statusRegistro) {
+            case 1:
+                if ($emailEnviado === 1) {
                     ?>
-                    <script type="text/javascript"> 
-                        jAlert("El usuario o password son incorrectos.", "Seguridad");
-                        $("#password").focus();
+                    <script type="text/javascript">
+                        jAlert("Gracias, ha sido registrado exitosamente.\n Se le ha enviado un correo electronico de bienvenida, \npor favor, NO LO CONTESTE pues solo es informativo.", 'Registro');
                     </script>
                     <?php
-                    break;          
-                case 2:
+                } else {
                     ?>
-                    <script type="text/javascript"> 
-                        jAlert("La seccion a la que intentaste entrar esta restringida.\n Solo permitida para usuarios registrados.", "Seguridad");
+                    <script type="text/javascript">
+                        jAlert("Gracias, ha sido registrado exitosamente.\n No se le ha podido enviar correo electronico de bienvenida, \nsin embargo, ya puede utilizar sus datos de acceso para iniciar sesion.", 'Registro');
                     </script>
-                    <?php       
-                    break;
-            } //Fin switch
-        }
- 
-        //Mostrar mensajes del estado del registro
-        if( isset( $_POST['status_registro'] ) ) {
-            switch( $_POST['status_registro'] ) {
-                case 1:
-                    if( $_POST['i_EmailEnviado'] == 1 ) {
-                        ?>
-                        <script type="text/javascript"> 
-                            jAlert("Gracias, ha sido registrado exitosamente.\n Se le ha enviado un correo electronico de bienvenida, \npor favor, NO LO CONTESTE pues solo es informativo.", 'Registro');
-                        </script>
-                        <?php
-                    } else {
-                        ?>
-                        <script type="text/javascript"> 
-                            jAlert("Gracias, ha sido registrado exitosamente.\n No se le ha podido enviar correo electronico de bienvenida, \nsin embargo, ya puede utilizar sus datos de acceso para iniciar sesion.", 'Registro');
-                        </script>
-                        <?php
-                    }
-                    break;          
-                 
-                default:
-                    ?>
-                    <script type="text/javascript"> 
-                        jAlert("Temporalmente NO se ha podido registrar, intente de nuevo mas tarde.", "Registro");
-                    </script>
-                    <?php       
-                    break;
-            } //Fin switch
-        }
+                    <?php
+                }
+                break;
+
+            default:
+                ?>
+                <script type="text/javascript">
+                    jAlert("Temporalmente NO se ha podido registrar, intente de nuevo mas tarde.", "Registro");
+                </script>
+                <?php
+                break;
+        } //Fin switch
+    }
     ?>
-     
+
 <div class="container">
     <form id="frmlogin" name="frmlogin"  method="POST" action="validarUsuario.php" class="form-horizontal">
         <div id="cabecera"></div>
         <h3>Iniciar Sesion</h3>
-       
+
        <div class="row">
            <div class="form-group">
                 <label for="usuario" class="col-lg-1 control-label">Usuario:</label>
@@ -93,7 +102,7 @@
         </div>
 
         <div class="clearfix"></div>
-        <br> 
+        <br>
 
         <div class="row">
           <div class="form-group">

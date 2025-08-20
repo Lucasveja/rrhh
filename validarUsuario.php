@@ -1,88 +1,91 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+declare(strict_types=1);
+ini_set('display_errors', '1');
+ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
 
 session_start();
-include("conexionn/conexion.php");
-include("Funciones_Turno.php");
+require_once 'conexionn/conexion.php';
+require_once 'Funciones_Turno.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    header("Location: index.php");
+    header('Location: index.php');
     exit;
 }
 
-$usr = trim($_POST['usuario'] ?? '');
-$pw  = trim($_POST['password'] ?? '');
+$usr = trim(filter_input(INPUT_POST, 'usuario', FILTER_UNSAFE_RAW) ?? '');
+$pw  = trim(filter_input(INPUT_POST, 'password', FILTER_UNSAFE_RAW) ?? '');
+
+if ($usr === '' || $pw === '') {
+    header('Location: index.php?msg_error=1');
+    exit;
+}
+
 $pw_enc = encriptar($pw);
 
 // ----------------------
 // Verificar conexión
 // ----------------------
-if (!$conexion) {
-    die("Error de conexión a la base de datos: " . mysqli_connect_error());
+if ($conexion->connect_errno) {
+    die('Error de conexión a la base de datos: ' . $conexion->connect_error);
 }
 
 // ----------------------
 // Intento Admin
 // ----------------------
-$stmtA = mysqli_prepare(
-    $conexion,
+$stmtA = $conexion->prepare(
     "SELECT id_dni, id_TipoUsuario, tx_nombre, tx_apellido
      FROM t_usuarios
      WHERE tx_username = ? AND tx_password = ?"
 );
 
 if (!$stmtA) {
-    die("Error en consulta Admin: " . mysqli_error($conexion));
+    die('Error en consulta Admin: ' . $conexion->error);
 }
 
-mysqli_stmt_bind_param($stmtA, "ss", $usr, $pw_enc);
-mysqli_stmt_execute($stmtA);
-$resA = mysqli_stmt_get_result($stmtA);
+$stmtA->bind_param('ss', $usr, $pw_enc);
+$stmtA->execute();
+$resA = $stmtA->get_result();
 
-if ($resA && ($rowA = mysqli_fetch_assoc($resA))) {
+if ($resA && ($rowA = $resA->fetch_assoc())) {
     $_SESSION['autenticado'] = 'SI';
     $_SESSION['uid'] = $rowA['id_dni'];
     $_SESSION['user'] = $usr;
-    $_SESSION['nombre_usuario'] = $rowA['tx_nombre'] . " " . $rowA['tx_apellido'];
-    header("Location: inicio.php");
+    $_SESSION['nombre_usuario'] = $rowA['tx_nombre'] . ' ' . $rowA['tx_apellido'];
+    header('Location: inicio.php');
     exit;
 }
-mysqli_stmt_close($stmtA);
+$stmtA->close();
 
 // ----------------------
 // Intento Evaluador
 // ----------------------
-$stmtE = mysqli_prepare(
-    $conexion,
+$stmtE = $conexion->prepare(
     "SELECT Id, Nombre
      FROM evaluador
      WHERE Legajo = ? AND clave = ?"
 );
 
 if (!$stmtE) {
-    die("Error en consulta Evaluador: " . mysqli_error($conexion));
+    die('Error en consulta Evaluador: ' . $conexion->error);
 }
 
-mysqli_stmt_bind_param($stmtE, "ss", $usr, $pw_enc);
-mysqli_stmt_execute($stmtE);
-$resE = mysqli_stmt_get_result($stmtE);
+$stmtE->bind_param('ss', $usr, $pw_enc);
+$stmtE->execute();
+$resE = $stmtE->get_result();
 
-if ($resE && ($rowE = mysqli_fetch_assoc($resE))) {
+if ($resE && ($rowE = $resE->fetch_assoc())) {
     $_SESSION['Evaluador'] = 'SI';
     $_SESSION['uid'] = $rowE['Id'];
     $_SESSION['user'] = $usr;
     $_SESSION['nombre_usuario'] = $rowE['Nombre'];
-    header("Location: inicio.php");
+    header('Location: inicio.php');
     exit;
 }
-mysqli_stmt_close($stmtE);
+$stmtE->close();
 
 // ----------------------
 // Credenciales inválidas
 // ----------------------
-echo "<h2>Usuario o clave incorrectos</h2>";
-echo "<p>Usuario ingresado: " . htmlspecialchars($usr) . "</p>";
-?>
-<a href="index.php">Volver al login</a>
+header('Location: index.php?msg_error=1');
+exit;
