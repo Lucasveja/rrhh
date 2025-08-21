@@ -1,4 +1,15 @@
-﻿<?php session_start(); ?>
+﻿<?php
+session_start();
+require_once '../conexionn/conexion.php';
+
+$periodo  = trim((string)(filter_input(INPUT_POST, 'periodo', FILTER_UNSAFE_RAW) ?? ''));
+$evaluado = filter_input(INPUT_POST, 'evaluado', FILTER_VALIDATE_INT);
+if ($evaluado === null || $evaluado === false) {
+    $evaluado = '';
+}
+$_POST['periodo']  = $periodo;
+$_POST['evaluado'] = $evaluado;
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -366,7 +377,6 @@ td:hover {
 
 
   <?php
-  include("../conexionn/conexion.php");
  // include("../funciones/Funciones_Turno.php");
 
   //SeSSIon
@@ -542,8 +552,8 @@ if($_POST['boton']=="Guardar")
 		 <div class="form-group  has-feedback ">         
 	 <label class="col-sm-1 control-label" >Periodo</label>	
 		    <div class="col-sm-3">
-			 <input type="text" class="form-control" id="periodo" name="periodo" value="<?php echo $_POST['periodo']?>" onChange="CambioPeriodo()"  requerid>
-			</div> 	 	  
+                        <input type="text" class="form-control" id="periodo" name="periodo" value="<?php echo htmlspecialchars($periodo, ENT_QUOTES, 'UTF-8'); ?>" onChange="CambioPeriodo()" required>
+					</div> 	 	  
 	  
 	 <label class="col-sm-1 control-label" >Evaluado</label>
            <div class="col-sm-3">
@@ -558,8 +568,8 @@ a.idevaluador='{$idEvaluador}' and a.idempresa='{$idEmpresa}' and a.periodo='{$p
 			   $ruslt=query($sqlOs);
 			  foreach ($ruslt->rows as $read) 
     	     {
-			     if($_POST['evaluado']==$read['id'])
-				 {
+                             if($evaluado == $read['id'])				 
+								{
 
 			   ?>
 			      
@@ -671,8 +681,8 @@ a.idevaluador='{$idEvaluador}' and a.idempresa='{$idEmpresa}' and a.periodo='{$p
 					<div class="panel-body">
 					<!--Aqui va el codigo de notas-->
 														  <?php	
-									 $periHay=$_POST['periodo'];
-									 $sqlHay="Select count(nivelalcanzado) as cantidad from movimientos where periodo='{$periHay}' and idcompetencia='{$read['id']}' and idevaluado='{$_POST['evaluado']}' and idevaluador='{$idEvaluador}' and idempresa='{$idEmpresa}' and (fechacierre<>'' or fechacierre is not null)";
+                                                                     $periHay = $periodo;
+                                                                     $sqlHay="Select count(nivelalcanzado) as cantidad from movimientos where periodo='{$periHay}' and idcompetencia='{$read['id']}' and idevaluado='{$evaluado}' and idevaluador='{$idEvaluador}' and idempresa='{$idEmpresa}' and (fechacierre<>'' or fechacierre is not null)";
 									
 									$consultaHay= mysqli_query($conexion, $sqlHay);
 									$rowCant= mysqli_fetch_array($consultaHay);
@@ -687,8 +697,7 @@ a.idevaluador='{$idEvaluador}' and a.idempresa='{$idEmpresa}' and a.periodo='{$p
 										  exit;
 										}
 										
-								?>
-								
+								?>								
 										
 										   <table id="tabla<?php echo $i;?>"  class="table table-striped table-condensed table-bordered dt-responsive nowrap table-hover"  						
 								cellspacing="0" width="50%">
