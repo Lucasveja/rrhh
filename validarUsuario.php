@@ -79,6 +79,7 @@ if ($resE && ($rowE = $resE->fetch_assoc())) {
     $_SESSION['uid'] = $rowE['Id'];
     $_SESSION['user'] = $usr;
     $_SESSION['nombre_usuario'] = $rowE['Nombre'];
+    $_SESSION['idempresa'] = (int)$rowE['IdEmpresa'];
     header('Location: inicio.php');
     exit;
 }

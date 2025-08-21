@@ -1,6 +1,39 @@
 ﻿<?php
 session_start();
 require_once '../conexionn/conexion.php';
+// === PATCH: asegurar idEvaluador e idEmpresa ===
+$idEvaluador = (int)($_SESSION['uid'] ?? 0);
+
+// Si ya guardás la empresa en sesión, úsala
+$idEmpresaSesion = (int)($_SESSION['idempresa'] ?? 0);
+
+// Si el archivo en algún lado ya arma $idEmpresa desde una consulta, lo respetamos.
+// Si no existe o vale 0, intento de sesión; y si no hay, lo busco por el evaluador.
+if (!isset($idEmpresa) || !(int)$idEmpresa) {
+    $idEmpresa = $idEmpresaSesion;
+    if (!$idEmpresa && $idEvaluador) {
+        if ($stmtEmp = $conexion->prepare('SELECT IdEmpresa FROM evaluador WHERE Id = ?')) {
+            $stmtEmp->bind_param('i', $idEvaluador);
+            $stmtEmp->execute();
+            $stmtEmp->bind_result($tmpEmp);
+            if ($stmtEmp->fetch()) {
+                $idEmpresa = (int)$tmpEmp;
+                // Opcional: guardar en sesión para futuras pantallas
+                $_SESSION['idempresa'] = $idEmpresa;
+            }
+            $stmtEmp->close();
+        }
+    }
+}
+
+// (Opcional) Normalizar un POST de periodo para evitar errores aguas abajo
+if (isset($_POST['periodo'])) {
+    $periDigits = preg_replace('/\D+/', '', (string)$_POST['periodo']);
+    if (strlen($periDigits) === 6) { $_POST['periodo'] = substr($periDigits, -4); } // MMYYYY -> YYYY
+    elseif (strlen($periDigits) === 4) { $_POST['periodo'] = $periDigits; }        // YYYY
+    // Si viene vacío u otro formato, lo dejamos como está y Filtro.php se encarga.
+}
+
 
 $periodo  = trim((string)(filter_input(INPUT_POST, 'periodo', FILTER_UNSAFE_RAW) ?? ''));
 $evaluado = filter_input(INPUT_POST, 'evaluado', FILTER_VALIDATE_INT);
