@@ -1,5 +1,4 @@
 ﻿<?php
-
 session_start();
 require_once __DIR__ . '/../conexionn/conexion.php';
 
@@ -45,16 +44,23 @@ if ($idEvaluador) {
 
 // Año por defecto (actual)
 $anioActual = (int)date('Y');
+
+// helper
+function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Informe de Evaluaciones</title>
 
-    <!-- Bootstrap -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@3.4.1/dist/css/bootstrap.min.css" />
+    <!-- Estilos locales (mismos que usa inicio.php) -->
+    <link rel="stylesheet" href="../style.css" type="text/css" media="screen" />
+    <link rel="stylesheet" href="../CSS/bootstrap.min.css" type="text/css" media="screen" />
+    <link rel="stylesheet" href="../CSS/sticky-footer-navbar.css" type="text/css" media="screen" />
+    <link rel="stylesheet" href="../CSS/fonts.css" type="text/css" media="screen" />
 
     <style>
         body { background: #f7f7f7; }
@@ -66,6 +72,16 @@ $anioActual = (int)date('Y');
     </style>
 </head>
 <body>
+
+<!-- NAV: el mismo de tu sitio -->
+<div class="container-fluid">
+  <header id="header">
+    <div class="row">
+      <?php include __DIR__ . "/../Menu/Menu_Bootstrap.php"; ?>
+    </div>
+  </header>
+</div>
+
 <div class="page-wrap">
     <div class="panel panel-primary">
         <div class="panel-heading">
@@ -80,16 +96,14 @@ $anioActual = (int)date('Y');
             <?php endif; ?>
 
             <form id="formInforme" class="form-horizontal" onsubmit="return false;">
-                <input type="hidden" id="idEmp"  name="idEmp"  value="<?=
-                    htmlspecialchars((string)$idEmpresa, ENT_QUOTES, 'UTF-8'); ?>">
-                <input type="hidden" id="idEval" name="idEval" value="<?=
-                    htmlspecialchars((string)$idEvaluador, ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" id="idEmp"  name="idEmp"  value="<?= h($idEmpresa); ?>">
+                <input type="hidden" id="idEval" name="idEval" value="<?= h($idEvaluador); ?>">
 
                 <div class="form-group">
                     <label class="col-sm-3 control-label">Empresa</label>
                     <div class="col-sm-9">
                         <p class="form-control-static"><strong><?=
-                            htmlspecialchars($nombreEmpresa ?: ('ID ' . $idEmpresa), ENT_QUOTES, 'UTF-8'); ?></strong></p>
+                            h($nombreEmpresa ?: ('ID ' . $idEmpresa)); ?></strong></p>
                     </div>
                 </div>
 
@@ -97,7 +111,7 @@ $anioActual = (int)date('Y');
                     <label class="col-sm-3 control-label">Evaluador</label>
                     <div class="col-sm-9">
                         <p class="form-control-static"><strong><?=
-                            htmlspecialchars($nombreEvaluador ?: ('ID ' . $idEvaluador), ENT_QUOTES, 'UTF-8'); ?></strong></p>
+                            h($nombreEvaluador ?: ('ID ' . $idEvaluador)); ?></strong></p>
                     </div>
                 </div>
 
@@ -105,7 +119,7 @@ $anioActual = (int)date('Y');
                     <label for="periodo" class="col-sm-3 control-label">Periodo</label>
                     <div class="col-sm-4">
                         <input type="text" class="form-control" id="periodo" name="periodo"
-                               placeholder="YYYY o MM/YYYY" value="<?= $anioActual; ?>" maxlength="7">
+                               placeholder="YYYY o MM/YYYY" value="<?= h($anioActual); ?>" maxlength="7">
                         <div class="help">Podés ingresar <code>YYYY</code> o <code>MM/YYYY</code>. Se usará el año.</div>
                     </div>
                 </div>
@@ -138,7 +152,10 @@ $anioActual = (int)date('Y');
     </div>
 </div>
 
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<!-- JS locales (mismos que usa inicio.php) -->
+<script src="../js/jquery.min.js"></script>
+<script src="../js/bootstrap.min.js"></script>
+
 <script>
 (function(){
     function normalizarAnio(valor){
@@ -146,7 +163,6 @@ $anioActual = (int)date('Y');
         var d = (''+valor).replace(/\D+/g,'');
         if (d.length === 6) return d.slice(-4); // MMYYYY -> YYYY
         if (d.length === 4) return d;          // YYYY
-        // rescato un año si hay 4 dígitos en algún lado
         var m = (''+valor).match(/(\d{4})/);
         return m ? m[1] : '';
     }
@@ -188,9 +204,8 @@ $anioActual = (int)date('Y');
     $('#btnRecargar').on('click', cargarEvaluados);
 
     $('#periodo').on('change blur', function(){
-        // normalizar visualmente a YYYY si el usuario puso MM/YYYY
         var y = normalizarAnio(this.value);
-        if (y) this.value = y; // mostramos sólo el año para evitar confusión
+        if (y) this.value = y; // mostramos sólo el año
         cargarEvaluados();
     });
 
@@ -233,4 +248,3 @@ $anioActual = (int)date('Y');
 </script>
 </body>
 </html>
-<?php
