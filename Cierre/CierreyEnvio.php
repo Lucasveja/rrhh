@@ -1,659 +1,294 @@
-<? session_start(); ?>
+<?php
+// Guardar como UTF-8 sin BOM
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+register_shutdown_function(function () {
+    $e = error_get_last();
+    if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        if (!headers_sent()) header('Content-Type: text/plain; charset=utf-8');
+        echo "Error fatal: {$e['message']} en {$e['file']}:{$e['line']}";
+    }
+});
+
+session_start();
+require_once __DIR__ . '/../conexionn/conexion.php'; // debe exponer $conexion (mysqli)
+
+// ====== Guard de sesión ======
+if ( !isset($_SESSION['uid']) || (!isset($_SESSION['autenticado']) && !isset($_SESSION['Evaluador'])) ) {
+    header('Location: /arcorsj/apps/rrhh/index.php');
+    exit;
+}
+
+// ====== Helpers ======
+function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+function table_exists(mysqli $cx, string $table): bool {
+    $tbl = mysqli_real_escape_string($cx, $table);
+    $res = mysqli_query($cx, "SHOW TABLES LIKE '{$tbl}'");
+    return $res && mysqli_num_rows($res) > 0;
+}
+function normalizar_anio(string $v): string {
+    $d = preg_replace('/\D+/', '', $v);
+    if ($d === null) return '';
+    if (strlen($d) === 6) return substr($d, -4); // MMYYYY -> YYYY
+    if (strlen($d) >= 4) return substr($d, -4);  // ...YYYY
+    return '';
+}
+
+// ====== Identidades ======
+$idEvaluador = (int)($_SESSION['uid'] ?? 0);
+$idEmpresa   = (int)($_SESSION['idempresa'] ?? 0);
+
+// Completar empresa desde evaluador si hace falta
+if (!$idEmpresa && $idEvaluador) {
+    if ($st = $conexion->prepare('SELECT IdEmpresa FROM evaluador WHERE Id = ? LIMIT 1')) {
+        $st->bind_param('i', $idEvaluador);
+        $st->execute();
+        $st->bind_result($idEmpTmp);
+        if ($st->fetch()) {
+            $idEmpresa = (int)$idEmpTmp;
+            $_SESSION['idempresa'] = $idEmpresa;
+        }
+        $st->close();
+    }
+}
+
+// Datos display
+$nombreEmpresa   = '';
+$nombreEvaluador = '';
+if ($idEmpresa) {
+    if ($st = $conexion->prepare('SELECT Empresa FROM empresas WHERE Id = ? LIMIT 1')) {
+        $st->bind_param('i', $idEmpresa);
+        $st->execute();
+        $st->bind_result($nombreEmpresa);
+        $st->fetch();
+        $st->close();
+    }
+}
+if ($idEvaluador) {
+    if ($st = $conexion->prepare('SELECT Nombre FROM evaluador WHERE Id = ? LIMIT 1')) {
+        $st->bind_param('i', $idEvaluador);
+        $st->execute();
+        $st->bind_result($nombreEvaluador);
+        $st->fetch();
+        $st->close();
+    }
+}
+
+// ====== Período por defecto ======
+$periodo = '';
+if (table_exists($conexion, 'periodos')) {
+    if ($st = $conexion->prepare("SELECT Periodo FROM periodos WHERE PeriodoActivo = 1 LIMIT 1")) {
+        $st->execute();
+        $st->bind_result($p);
+        if ($st->fetch()) $periodo = normalizar_anio((string)$p);
+        $st->close();
+    }
+}
+if ($periodo === '') $periodo = date('Y');
+
+// ====== Estadísticas (asignados vs movimientos) ======
+$totAsignados = 0; $totCargados = 0;
+if ($st = $conexion->prepare("SELECT COUNT(*) FROM asignados WHERE IdEmpresa=? AND IdEvaluador=? AND Periodo=?")) {
+    $st->bind_param('iis', $idEmpresa, $idEvaluador, $periodo);
+    $st->execute();
+    $st->bind_result($totAsignados);
+    $st->fetch();
+    $st->close();
+}
+if ($st = $conexion->prepare("SELECT COUNT(DISTINCT IdEvaluado) FROM movimientos WHERE IdEmpresa=? AND IdEvaluador=? AND Periodo=?")) {
+    $st->bind_param('iis', $idEmpresa, $idEvaluador, $periodo);
+    $st->execute();
+    $st->bind_result($totCargados);
+    $st->fetch();
+    $st->close();
+}
+$pendientes = max(0, $totAsignados - $totCargados);
+
+// ====== Cierre (POST) ======
+$mensaje = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion']) && $_POST['accion']==='cerrar') {
+    $perReq = normalizar_anio((string)($_POST['periodo'] ?? ''));
+    if ($perReq === '') $perReq = $periodo;
+
+    // Marcar cierre en movimientos (solo los que no tengan fechacierre)
+    if ($st = $conexion->prepare("UPDATE movimientos SET fechacierre = NOW() WHERE IdEmpresa=? AND IdEvaluador=? AND Periodo=? AND (fechacierre IS NULL OR fechacierre='0000-00-00' OR fechacierre='')")) {
+        $st->bind_param('iis', $idEmpresa, $idEvaluador, $perReq);
+        $st->execute();
+        $af = $st->affected_rows;
+        $st->close();
+        $mensaje = "Se marcaron {$af} registros como cerrados para el período {$perReq}.";
+    } else {
+        $mensaje = "No se pudo cerrar el período.";
+    }
+
+    // (Opcional) Notificación por email a administradores – robusto, no rompe si faltan tablas/columnas
+    if (table_exists($conexion, 't_usuarios')) {
+        // Detectar columna de email disponible
+        $colEmail = null;
+        $cols = [];
+        if ($rs = $conexion->query("DESCRIBE t_usuarios")) {
+            while ($r = $rs->fetch_assoc()) $cols[] = $r['Field'];
+            $rs->close();
+        }
+        foreach (['email','tx_mail','tx_email','correo','mail'] as $c) {
+            if (in_array($c, $cols, true)) { $colEmail = $c; break; }
+        }
+        if ($colEmail) {
+            $sql = "SELECT {$colEmail} FROM t_usuarios WHERE {$colEmail} IS NOT NULL AND {$colEmail}<>''";
+            // si existe id_tipousuario lo filtro como admin (=1)
+            if (in_array('id_tipousuario', $cols, true)) $sql .= " AND id_tipousuario=1";
+            $emails = [];
+            if ($rs = $conexion->query($sql)) {
+                while ($r = $rs->fetch_row()) { if (filter_var($r[0], FILTER_VALIDATE_EMAIL)) $emails[] = $r[0]; }
+                $rs->close();
+            }
+            $emails = array_unique($emails);
+
+            if ($emails) {
+                $to = implode(',', $emails);
+                $asunto = "Cierre de Evaluaciones – {$periodo}";
+                $body = "<html><body style=\"font-family:Arial,sans-serif;font-size:14px\">
+                    <h3>Se realizó el cierre de Evaluaciones</h3>
+                    <p><strong>Empresa:</strong> ".h($nombreEmpresa)." (ID ".h($idEmpresa).")<br>
+                       <strong>Evaluador:</strong> ".h($nombreEvaluador)." (ID ".h($idEvaluador).")<br>
+                       <strong>Período:</strong> ".h($perReq)."</p>
+                    <p><strong>Asignados:</strong> ".(int)$totAsignados." &nbsp; 
+                       <strong>Cargados:</strong> ".(int)$totCargados." &nbsp; 
+                       <strong>Pendientes:</strong> ".(int)$pendientes."</p>
+                    <p>Este es un mensaje automático del sistema de RRHH.</p>
+                    </body></html>";
+                $hdr  = "MIME-Version: 1.0\r\n";
+                $hdr .= "Content-Type: text/html; charset=UTF-8\r\n";
+                $hdr .= "From: RRHH <no-reply@localhost>\r\n";
+                // Silencioso: si falla, no interrumpe el flujo
+                @mail($to, $asunto, $body, $hdr);
+            }
+        }
+    }
+
+    // Refrescar métricas luego del cierre
+    header("Location: CierreyEnvio.php?ok=1&msg=".urlencode($mensaje));
+    exit;
+}
+?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
-  <title>Developsys/Evaluaci&oacute;n</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
- <!-- Estilos CSS vinculados -->
-  <link rel="stylesheet" type="text/css" href="../fonts/style.css">
-  <link rel="stylesheet" type="text/css" href="../style.css">
+  <meta charset="utf-8" />
+  <title>Cierre y Envío</title>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <link href="../CSS/bootstrap.css" rel="stylesheet">
-   <script type="text/javascript" src="../js/funciones_Turno.js"></script>
-    <script src="../js/11.3/jquery.min.js"></script> 
-<!--  <link href="../css/bootstrap.min.css" rel="stylesheet">  
- <link rel="stylesheet" type="text/css" href="../css/dataTables.bootstrap.css">
- <link rel="stylesheet" type="text/css" href="../css/DT_bootstrap.css">
-   JAVASCRIPT
- <script type="text/javascript" src="../js/funciones.js"></script>
-
- <script src="../js/bootstrap.min.js"></script>
- <script type="text/javascript" language="javascript" src="../js/jquery.dataTables.js"></script>
- <script type="text/javascript" src="../js/dataTables.bootstrap.min.js"></script> -->
-
-  <script>
-function LlamarJquery(){
-    	
-
-		   // Vector para saber cu?l es el siguiente combo a llenar
-			
-		    var combos = new Array();
-		    combos['evaluador'] = "evaluado";
-		 
-			
-		    // Tomo el nombre del combo al que se le a dado el clic por ejemplo: pa?s
-		    posicion ="evaluador"; //$(this).attr("name");
-			
-		    // Tomo el valor de la opci?n seleccionada
-		    valor = 1;//$(this).val();
-		     // Evalu?  que si es pa?s y el valor es 0, vaci? los combos de estado y ciudad
-		    if(posicion == 'evaluador' && valor==0){
-		        $("#evaluado").html('    <option value="0" selected="selected">----------------</option>')
-		      
-		    }else{
-		   //En caso contrario agregado el letreo de cargando a el combo siguiente
-		   // Ejemplo: Si seleccione pa?s voy a tener que el siguiente seg?n mi vector combos es: estado  por qu?  combos [pa?s] = estado
-		       
-		        $("#"+combos[posicion]).html('<option selected="selected" value="0">Cargando...</option>')
-		       // Verificamos si el valor seleccionado es diferente de 0 y si el combo es diferente de ciudad, esto 
-
-//porque no tendr?a caso hacer la consulta a ciudad porque no existe un combo dependiente de este 
-		        
-		        if(valor!="0" || posicion !='ciudad'){
-		        // Llamamos a pagina de combos.php donde ejecuto las consultas para llenar los combos
-		  
-		            $.post("Filtro.php",{
-		                               combo:'evaluador', // Nombre del combo
-		                                id:$("#idEval").get(0).value, // Valor seleccionado
-										 emp:$("#idEmp").get(0).value,
-										 per:$("#periodo").get(0).value
-		                                },function(data){
-		                                                $("#"+combos[posicion]).html(data);    //Tomo el resultado de pagina e inserto los datos en el combo indicado
-		                                                })
-
-		        }
-		    }
-	}
-	
-
-
-
-  </script>
-  
- <script>
- var patronPeriodo = new Array(4) 
-function mascaraPeriodo(d,sep,pat,nums){
-	if(d.valant != d.value){
-		val = d.value
-		largo = val.length
-		val = val.split(sep)
-		val2 = ''
-		for(r=0;r<val.length;r++){
-			val2 += val[r]
-		}
-		if(nums){
-			for(z=0;z<val2.length;z++){
-				if(isNaN(val2.charAt(z))){
-					letra = new RegExp(val2.charAt(z),"g")
-					val2 = val2.replace(letra,"")
-				}
-			}
-		}
-		val = ''
-		val3 = new Array()
-		for(s=0; s<pat.length; s++){
-			val3[s] = val2.substring(0,pat[s])
-			val2 = val2.substr(pat[s])
-		}
-		for(q=0;q<val3.length; q++){
-			if(q ==0){
-				val = val3[q]
-			}
-			else{
-				if(val3[q] != ""){
-				      
-					     val += sep + val3[q]
-						
-					}
-			}
-		}
-		
-		d.value = val
-		d.valant = val
-		}
-}//mascara
-
- function recargar(id)
- {
-     formu.oculto.value=id;
-	 formu.submit();
- }//recargar
- 
- function Completar(obj,cant)
- { 
-   if(isNaN(obj.value))
-   {
-      alert("Ingrese valor v?lido")
-	  obj.value='';
-	  return false;
-   }
-     while (obj.value.length<cant)
-       obj.value = '0'+obj.value;
-	   
-	
- }
-
-function Marcar(niv,ids)
-{
-
-  
-   for (var i=1;i < document.getElementById('tabla').rows.length ; i++){
-            // for (var j=0; j<2; j++){
-			        //  if(j==2)
-					 // {
-					   // alert(document.getElementById('tabla').rows[i].cells[2].innerHTML);
-					    //document.getElementById('tabla').rows[i].cells[2].innerHTML='0';
-					 // }
-					 document.getElementById(i).innerHTML='';
-                    
-             }
-    
-	 
-  document.getElementById(niv).innerHTML=niv+'<img src="../images/nota.png"></img>';
-  formu.nivelAl.value=niv;
-  formu.idnivel.value=ids;
-  
-  //document.getElementById("registro").rows[0].cells[0].innerHTML ='cambiar';
- 
-}//marcar
-
-function Refrescar()
-{
-  for (var i=1;i < document.getElementById('tabla').rows.length ; i++){
-          			 document.getElementById(i).innerHTML='';
-                    
-             }
-}//refrescar
- 
- function CambioPeriodo()
-{
-   
-   document.getElementById("evaluado").selectedIndex = "0";
-   LlamarJquery();
-}
-
-function Validar()
-{
-
-  if(formu.periodo.value== null || formu.periodo.value=="")
-  {
-     formu.periodo.focus;
-	 alert('Ud. debe completar todos los datos del periodo');
-	 return false;
-  }
- 
-  
-  
-  return true;
-}//validar
-
-function Enviar(per,emp,eva)
-{
-
-   
- 
-  ventMET = window.open("ExcelEnvio.php?per="+per+"&eval="+eva+"&empr="+emp,"ventSint","width=840, height=650, scrollbars=yes, menubar=no, location=no, center=yes, help=no,resizable=no");
-
-}
- 
-
- </script>
-
-<style>
-td:hover {
-            background:red
-        }
-        
-        tr td:hover {
-            background:blue;
-        }
-        
-        tr:hover td {
-            background: #F6AC89;
-        }
-
-</style>
-
+  <!-- CSS locales -->
+  <link rel="stylesheet" href="../CSS/bootstrap.min.css" />
+  <link rel="stylesheet" href="../CSS/sticky-footer-navbar.css" />
+  <link rel="stylesheet" href="../CSS/fonts.css" />
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    body{background:#f7f7f7}
+    .page-wrap{max-width:980px;margin:30px auto}
+    .panel{box-shadow:0 2px 10px rgba(0,0,0,.06)}
+    .help{color:#777;font-size:12px}
+  </style>
 </head>
 <body>
 
-
-  <?
-  include("../conexionn/conexion.php");
- // include("../funciones/Funciones_Turno.php");
-
-  //SeSSIon
-
- //Inicializar una sesion de PHP
- //Validar que el usuario este logueado y exista un UID
-
- if ( ! (($_SESSION['autenticado'] == 'SI' || $_SESSION['Evaluador'] == 'SI' )&& isset($_SESSION['uid'])) ){
-    //En caso de que el usuario no este autenticado, crear un formulario y redireccionar a la 
-    //pantalla de login, enviando un codigo de error
-  ?>
-    <form name="formulario" method="post" action="../index.php">
-      <input type="hidden" name="msg_error" value="2">
-    </form>
-    <script type="text/javascript"> 
-      document.formulario.submit();
-    </script>
-  <? 
-  }
-
-  //Sacar datos del usuario que ha iniciado sesion
-  /*$sql = "SELECT  tx_nombre,tx_apellido,tx_TipoUsuario,id_dni
-                FROM T_Usuarios
-                LEFT JOIN T_tipoUsuario
-                ON T_Usuarios.id_TipoUsuario = T_tipoUsuario.id_TipoUsuario
-                WHERE id_dni = '".$_SESSION['uid']."'";   */
-$sql="select nombre,idempresa,empresa from evaluador e inner join empresas m on e.idempresa=m.id where e.id= '".$_SESSION['uid']."'";				      
-  $result     =mysql_query($sql);
-  $nombreUsuario = "";
-
-  //Formar el nombre completo del usuario
-  if( $fila = mysql_fetch_array($result) )
-    $nombreUsuario =$fila['nombre']; //$fila['tx_nombre']." ".$fila['tx_apellido'];
-    $idEmpresa= $fila['idempresa'];
-	$idEvaluador=$_SESSION['uid'];
-  //Cerrrar conexion a la BD
-  //mysql_close($conexion);
-
-
-  //Fin Session
-  // $nombreUsuario='Gyllote'; 
-
-function mailto($test = array(), $html = false)
-{
-    //
-    $test = array_merge(array(
-            'to' => null,
-            'from' => null,
-            'reply' => null,
-            'subject' => null,
-            'content' => null
-    ), $test);
-    
-    // en sus marcas!
-    $head = array(
-            "to: $test[to]",
-            'X-Mailer: PHP/'.phpversion(),
-            'MIME-version: 1.0'
-    );
-    
-    $hash = md5(uniqid('PHP'));
-    //$mime = $html? 'html': 'html';
-    $mime = $html? 'html': 'plain';
-    $content = !$html?  // limpiamos??
-            strip_tags($test['content']): $test['content'];
-    
-    if (isset($test['from']))
-    { // origen..
-        $head[] = "from: $test[from]";
-    }
-    if (isset($test['reply']))
-    {// respuesta?
-        $head[] = "reply-to: $test[reply]";
-    }
-    
-    // header mixto...
-    $head[] = 'content-type: multipart/mixed; boundary="mix-'.$hash.'"';
-    
-    // body mixto...
-    $body[] = "--mix-$hash";
-    $body[] = 'content-Type: multipart/alternative; boundary="alt-'.$hash.'"';
-    
-    $body[] = "--alt-$hash";
-    $body[] = 'content-type: text/'.$mime.'; charset="iso-8859-1"';
-    $body[] = 'content-transfer-encoding: 7bit';
-    
-    $body[] = null; // xS
-    $body[] = $content;
-    $body[] = null;
-    
-    $body[] = "--alt-$hash--";
-    
-    // if (!empty($add) && is_array($add))
-    // {
-    //     foreach ($add as $key => $val)
-    //     { // adjuntamos...!
-    //         $file = is_numeric($key)? $val: $key;
-    //         $key = !is_numeric($key)? $val: null;
-            
-    //         if (is_file($file))
-    //         {
-    //             $name = is_file($file)? basename($file): urlencode($file);
-    //             $mime = // establecemos tipo MIME... ?
-    //                     preg_match('/^[a-z]+\/[a-z0-9\+-]+$/i', $key)?
-    //                     $key: 'application/octet-stream';
-
-    //             $body[]="--mix-$hash";
-    //             $body[] = 'content-type: '.$mime.'; name="'.$name.'"';
-    //             $body[] = 'content-transfer-encoding: base64';
-    //             $body[] = 'content-disposition: attachment';
-
-    //             $body[]= null;
-    //             $body[]= // agregamos correctamente?
-    //                     chunk_split(base64_encode(file_get_contents($file)));
-    //             $body[]= null;
-    //         }
-    //     }
-    // }
-    $body[] = "--mix-$hash--";
-    
-    if (mail($test['to'], $test['subject'], join("\n", $body), join("\n", $head)))
-    { // ... ok!?
-        return true;
-    }
-}  
-  
-if($_POST['boton']=="Cerrar y Enviar")
-{
-  
-   
-  $peri= explode('/',$_POST['periodo']);
-  $periodo=$peri[0].$peri[1];
-  $sqlIn="update movimientos set fechacierre=curdate() where periodo='{$periodo}' and idevaluador ='{$idEvaluador}' and (fechacierre is null or fechacierre='')";
- 
- 
-  if(mysql_query($sqlIn))
-  {
-   ?>
-	  <div class="alert alert-success alert-dismissable">
-		 <button type="button" class="close" data-dismiss="alert">&times;</button>
-		 <strong>�&Eacute;xito!</strong> La actualizaci&oacute;n finaliz&oacute; correctamente.
-	 </div>
-	  <?
-			 $sqlMail="SELECT * FROM t_usuarios where id_tipousuario=1 and (tx_email is not null or tx_email<>'') ";
-			   $ruslt=query($sqlMail);
-			  foreach ($ruslt->rows as $read) 
-    	     {	  
-			   $str_email=$read['tx_email'];//"castro_gf@yahoo.com.ar";
-			   // $str_elNombre='JJJJ';
-				//$str_username='dasd';
-			    //$str_password='dasda';
-
-
-				// Le  Envio  un correo electronico  de bienvenida
-				// $destinatario = $str_email;                    //A quien se envia
-				// $nomAdmin           = 'DevelopSys';           //Quien envia
-				// $mailAdmin      = 'djfox84@gmail.com';       //Mail de quien envia
-				// $urlAccessLogin = 'http://developsys.com.ar/Turnos/index.php';       //Url de la pantalla de login
-
-
-				$nombre_origen    = "DevelopSys"; 
-	            $email_origen     = "no-replay@developsys.com.ar"; 
-	            //$email_copia      = "aaaaaaa@aa.com"; 
-	            //$email_ocultos    = "aaaaaaa@aa.com"; 
-	            $email_destino    = "".$str_email."";
-
-
-
-
-			 
-				$mensaje = "";
-				$asunto = "Cierre del evaluador ".$nombreUsuario;//$str_elNombre
-			 
-				$mensaje ="<h2>.::Cierre Evaluador::.</h2>";
-				$mensaje.="Sr. ".$read['tx_apellido']." ".$read['tx_nombre']." se produjo el cierre de un evaluador.</p>";
-				$mensaje.="Para visualizarlo ingresar a: <img src='http://developsys.com.ar/apps/rrhh/images/descargarImagen.png'></img><br><br/><br/>
-			   <br><br>";
-
-			    $conf['to'] = $email_destino;
-	            $conf['from'] = $email_origen;
-	            $conf['subject'] = $asunto;
-	            $conf['content'] =  $mensaje;
-
-
-
-	            if (mailto($conf,  true))
-	            {
-	             // ok
-	            }
-			 
-			  
-			 
-				
-				 
-				//Cerrrar conexion a la BD
-				//mysql_close($conexion);
-			 
-				// Mostrar resultado del registro
-    
-	       }//for
-  }
-   else
-	  {
-   ?>
-	  <div class="alert alert-warning alert-dismissable">
-		 <button type="button" class="close" data-dismiss="alert">&times;</button>
-		 <strong>�Error!</strong> Hubo un error en la actualizaci&oacute;n.
-	 </div>
-	  <?
-	  }
- 
-}//guardar
-
-
-  
-  ?>
-
-  <!--          COMIENZO  DE     ELEMENTOS                  -->
-  <div class="container-fluid">
-    <header id="header" class="">
-      <div class="row">
-        <?include("../Menu/Menu_Bootstrap.php");?>
-      </div><!--FIN ROW-->
-    </header><!-- /header -->
-  </div>
- 
-  
-
-  <form class="form-horizontal" data-toggle="validator" id="formu" name="formu" method="post">
-
-
-    <div class="container">
-     
-
-       <div class="row">
-        <div id="cabecera_simple"> By Developsys</div>
-      </div>
-
-      <div id="segmento" style="margin-left:100px">
-        <div style="text-align:center; margin:10px; font-size:16px; color:white; font-weight:bold">
-          <small>Cierre y Envio</small>
-        </div>
-      </div>
-  
-     
-      </br> 
-
-      <div class="form-group  has-feedback ">
-          <label class="col-sm-1 control-label" >Empresa</label>
-		   <div class="col-sm-3">
-		    <input type="text" class="form-control" id="empresa" name="empresa" value="<? echo  $fila['empresa']?>" readonly requerid>
-             
-          
-		  </div>
-		  <label class="col-sm-1 control-label" >Evaluador</label>
-           <div class="col-sm-3">
-		    <input type="text" class="form-control" id="evaluador" name="evaluador" value="<? echo  $nombreUsuario?>" readonly requerid>
-		  
-        
-      </div>  
-		   
-	  </div>	  
-		
-		
-		 <div class="form-group  has-feedback ">         
-	 <label class="col-sm-1 control-label" >Periodo</label>	
-		    <div class="col-sm-3">
-			 <input type="text" class="form-control" id="periodo" name="periodo" value="<? echo $_POST['periodo']?>" onChange="CambioPeriodo()"  maxlength="4" requerid>
-			</div> 	 	  
-	  
-	<!-- <label class="col-sm-1 control-label" >Evaluado</label>
-           <div class="col-sm-3">
-        <select  data-size="5" class="form-control"  name="evaluado" id="evaluado" onChange="Refrescar()">
-		   <option></option>
-		   <?
-		       /* $peri= explode('/',$_POST['periodo']);
-                $periHay=$peri[0].$peri[1];
-		       $sqlOs="SELECT e.id,e.nombre FROM asignados a inner join evaluado e on a.idevaluado=e.id where
-a.idevaluador='{$idEvaluador}' and a.idempresa='{$idEmpresa}' and a.periodo='{$periHay}'";
-			   $ruslt=query($sqlOs);
-			  foreach ($ruslt->rows as $read) 
-    	     {
-			     if($_POST['evaluado']==$read['id'])
-				 {
-
-			   ?>
-			      
-			      <option value="<? echo $read['id']?>" selected><? echo $read['nombre']?></option>
-			   <?
-			      }
-				  else
-				  {
-				     ?>
-			      
-			      <option value="<? echo $read['id']?>"><? echo $read['nombre']?></option>
-			       <?
-				  }
-			 }//for*/
-		   ?>
-		 
-		   </select>
-      </div>  
-	  <div class="form-group col-sm-2">
-    	    <div align="left">
-    	      <input name="boton" type="submit" class="btn btn-default "  value="Buscar" onClick="return Validar()">
-    	      
-  	        </div>
-    	  </div> -->
-	</div>	
-    	
-  
-    	  
-    
-<?
-   if($_POST['boton']=="Buscar")
-   {
-    $per= explode('/',$_POST['periodo']);
-    $periHay=$per[0].$per[1];
-	  if($_POST['evaluado']=='')
-	  {//todos los evaluados del periodo y del evaluador
-	      $sqlHay="SELECT nombre,count(idcompetencia) as total FROM movimientos m inner join evaluado e on m.idevaluado=e.id where periodo='{$periHay}' and idevaluador='{$idEvaluador}' and m.idempresa='{$idEmpresa}' and  fechacierre is null group by m.idevaluado  ";
-	  }
-
-	  else
-	  {//un evaluado especifico
-	      $sqlHay="SELECT nombre,count(idcompetencia) as total FROM movimientos m inner join evaluado e on m.idevaluado=e.id where periodo='{$periHay}' and idevaluado='{$_POST['evaluado']}' and idevaluador='{$idEvaluador}' and m.idempresa='{$idEmpresa}' and fechacierre is null group by m.idevaluado  ";
-	  }
-	
-    $consultaHay= mysql_query($sqlHay);
-	$rowCant= mysql_fetch_array($consultaHay);
-		if($rowCant['total']==0)
-		{
-			?>
-		  <div class="alert alert-warning; alert-dismissable">
-			 <button type="button" class="close" data-dismiss="alert">&times;</button>
-			 <strong>?Atenci&oacute;n!</strong> No hay datos.
-		 </div>
-		  <?
-		  exit;
-		}
-		
-?>
-
-         <div class="container" align="center">		
-           <table id="tabla"  class="table table-striped table-condensed table-bordered dt-responsive nowrap table-hover"  align="center" 
-
-cellspacing="0" width="80%">
-             <thead>
-              <tr>
-			            <th>Evaluado</th>
-						<th>Total Competencia</th>
-					   
-              </tr>
-             </thead>
-             <tbody>
-             <?php
-			 
-			   			    
-			      $ruslt=query($sqlHay);
-    		  
-    		   foreach ($ruslt->rows as $read) 
-    	     {  	   	            
-
-
-               echo "<tr >";              
-               echo '<td style="font-size:13px">'.utf8_encode ($read['nombre']).'</td>';   		   
-    		   echo '<td style="font-size:13px">'.utf8_encode ($read['total']).'</td>';  		  
-    		    
-               echo '</tr>';
-              }
-			   
-            
-			
-             ?>
-			<tbody>
-            </table>
-			
-      </div>
-    
-        <script type="text/javascript">
-      // For demo to fit into DataTables site builder...
-      $('#registro')
-        .removeClass( 'display' )
-        .addClass('table table-striped table-bordered');
-    </script>
-       
-	 <?
-	  }//buscar
-	 ?>  
-     <div class="form-group">
-      <div class="col-xs-offset-3 col-xs-9">
-            <input type="submit" class="btn btn-primary" value="Cerrar y Enviar" name="boton" onClick="return Validar()" >
-			 <input type="submit" class="btn btn-alert" value="Cancelar">
-			<input type="reset" class="btn btn-warning" value="Salir" onClick="window.location.assign('/apps/rrhh/inicio.php')">
-      </div>
+<!-- NAV -->
+<div class="container-fluid">
+  <header id="header">
+    <div class="row">
+      <?php include __DIR__ . "/../Menu/Menu_Bootstrap.php"; ?>
     </div>
-    </div><!--CONTAINER--> 
-	
-<input name="nivelAl" type="hidden">
-<input name="idnivel" type="hidden">
-<input name="idEmp" id="idEmp" type="hidden" value="<? echo $idEmpresa?>">
-<input name="idEval" id="idEval" type="hidden" value="<? echo $idEvaluador?>">
-  </form>
+  </header>
+</div>
 
+<div class="page-wrap">
+  <div class="panel panel-primary">
+    <div class="panel-heading">
+      <h3 class="panel-title">Cierre y Envío</h3>
+    </div>
+    <div class="panel-body">
 
+      <?php if (isset($_GET['ok'])): ?>
+        <div class="alert alert-success"><?= h($_GET['msg'] ?? 'Operación realizada.') ?></div>
+      <?php elseif ($mensaje): ?>
+        <div class="alert alert-info"><?= h($mensaje) ?></div>
+      <?php endif; ?>
 
-       <!-- Js vinculados -->
-  <script type="text/javascript" src="../js/jquery.min.js"></script>
-  <script type="text/javascript" src="../js/bootstrap.js"></script>
-    
-    
- 
+      <form method="post" class="form-horizontal">
+        <input type="hidden" name="accion" value="cerrar">
 
+        <div class="form-group">
+          <label class="col-sm-3 control-label">Empresa</label>
+          <div class="col-sm-9">
+            <p class="form-control-static"><strong><?= h($nombreEmpresa ?: ('ID '.$idEmpresa)) ?></strong></p>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="col-sm-3 control-label">Evaluador</label>
+          <div class="col-sm-9">
+            <p class="form-control-static"><strong><?= h($nombreEvaluador ?: ('ID '.$idEvaluador)) ?></strong></p>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="periodo" class="col-sm-3 control-label">Período</label>
+          <div class="col-sm-3">
+            <input type="text" id="periodo" name="periodo" class="form-control" value="<?= h($periodo) ?>" placeholder="YYYY o MM/YYYY" maxlength="7">
+            <div class="help">Ingresá <code>YYYY</code> o <code>MM/YYYY</code> (se usará el año).</div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="col-sm-3 control-label">Estado</label>
+          <div class="col-sm-9">
+            <p class="form-control-static">
+              Asignados: <strong><?= (int)$totAsignados ?></strong> &nbsp; | &nbsp;
+              Cargados: <strong><?= (int)$totCargados ?></strong> &nbsp; | &nbsp;
+              Pendientes: <strong><?= (int)$pendientes ?></strong>
+            </p>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="col-sm-12 text-right">
+            <a class="btn btn-default" target="_blank"
+               href="/arcorsj/apps/rrhh/Informes/pdf_completo.php?empresa=<?= (int)$idEmpresa ?>&evaluador=<?= (int)$idEvaluador ?>&periodo=<?= h($periodo) ?>">
+              Ver PDF combinado
+            </a>
+            <button type="submit" class="btn btn-primary"
+                    onclick="var y=(this.form.periodo.value||'').replace(/\\D+/g,''); if(y.length>=4) this.form.periodo.value=y.slice(-4);">
+              Cerrar y Enviar
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <hr>
+
+      <p class="help">
+        El botón <strong>Cerrar y Enviar</strong> marca como cerradas (fecha de cierre) las evaluaciones del período,
+        y notifica por email a los administradores (si hay emails configurados). El PDF combinado usa Dompdf.
+      </p>
+
+    </div>
+  </div>
+</div>
+
+<!-- JS -->
+<script src="../js/jquery.min.js"></script>
+<script src="../js/bootstrap.min.js"></script>
+<script>
+  (function(){
+    var $p = document.getElementById('periodo');
+    if ($p) $p.addEventListener('blur', function(){
+      var d = (this.value||'').replace(/\D+/g,'');
+      if (d.length >= 4) this.value = d.slice(-4);
+    });
+  })();
+</script>
 </body>
 </html>
-<?
-function HayNota($peri,$compe,$evalua,$dor,$empre,$niv)
-{
-   $peri= explode('/',$_POST['periodo']);
-  $periodoHay=$peri[0].$peri[1];
-  $sqlHay="Select nivelalcanzado from movimientos where periodo='{$periodoHay}' and idcompetencia='{$compe}' and idevaluado='{$evalua}' and idevaluador='{$dor}' and idempresa='{$empre}'";
-   $consultaHay= mysql_query($sqlHay);
-  $rowHay= mysql_fetch_array($consultaHay);
-  if($niv==$rowHay['nivelalcanzado'])
-  {
-     return $rowHay['nivelalcanzado'].'<img src="../images/nota.png"></img>';
-   }
-  return '';
-}
-
-?>
-    
-    
- 
-
-
